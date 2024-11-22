@@ -1,62 +1,116 @@
-import requests
+import utils
 
 
-def __responseSuccessful(response: requests.Response) -> bool:
-	if response.status_code != 200:
-		print("Failed to fetch data:", response.status_code)
-		return False
-	return True
+def handleResponseStatus(status):
+	if status != 200:
+		raise Exception(f'Error: {status}')
 
 
-def getLongPollServer(group_id: str, api_key: str, version: str = "5.199") -> dict:
+@utils.async_session(handleResponseStatus)
+def getLongPollServer(*,
+			  url: str,
+			  params: dict[str, any],
+			  __async_session: "aiohttp.ClientSession") -> dict:
+	"""
+	params:
+		group_id: str
+		access_token=api_key: str
+		v=version: str
+	More info: https://dev.vk.com/ru/method/groups.getLongPollServer
+	"""
+
+	return __async_session.get(f'{url}/method/groups.getLongPollServer', params=params)
+
+
+@utils.async_session_generator(handleResponseStatus)
+def getSessionEvent(*,
+			poll_session: dict[str, any],
+			__async_session: "aiohttp.ClientSession") -> dict:
+	server = poll_session['server']
+	key = poll_session['key']
+	ts = poll_session['ts']
+	wait = poll_session.get('wait', 25) # not necessary
+
+	"""
+	Request to server given by getLongPollServer. Fetch new event
+	More info: https://dev.vk.com/ru/api/bots-long-poll/getting-started
+	"""
+
+	return __async_session.get(f'{server}?act=a_check&key={key}&ts={ts}&wait={wait}')
+
+
+async def vkStartPolling(*,
+			 url: str,
+			 group_id: str,
+			 access_token: str,
+			 v: str,
+			 onUpdate: callable = None):
+
+	if onUpdate is None:
+		def handle(update):
+			print(update)
+		onUpdate = handle
+	
 	params = {
 		"group_id": group_id,
-		"access_token": api_key,
-		"v": version
+		"access_token": access_token,
+		"v": v,
 	}
+	session = (await getLongPollServer(
+			url=url,
+			params=params))['response']
 
-	response = requests.get("https://api.vk.com/method/groups.getLongPollServer", params=params)
+	async for updates in getSessionEvent(poll_session=session):
 
-	if not __responseSuccessful(response):
-		return {"Error": response.status_code}
-	
-	session_data = response.json()
-	
-	if "response" not in session_data:
-		print("Error:", session_data.get("error", {}).get("error_msg", "Unknown error"))
-		raise Exception("Failed to fetch data: no response field")
-	
-	return session_data["response"]
+		"""
+		More about 'failed' handling:
+		https://dev.vk.com/ru/api/bots-long-poll/getting-started
+		(scroll down)
+		"""
+		failed = updates.get('failed', 0)
 
-def getSessionEvent(server: str, key: str, ts: int, wait: int = 25) -> dict:
+		if failed == 2:
+			session = (await getLongPollServer(
+				url=url,
+				params=params))['response']
+			session['ts'] = updates['ts']
+			continue
+		if failed == 3:
+			session = (await getLongPollServer(
+				url=url,
+				params=params))['response']
+			continue
 
-	response = requests.get(f'{server}?act=a_check&key={key}&ts={ts}&wait={wait}')
-	
-	if not __responseSuccessful(response):
-		return {"Error": response.status_code}
-	
-	event_data = response.json()
-	
-	return event_data
+		session['ts'] = updates['ts']
+
+		for update in updates.get('updates', []):
+
+			update_processing = onUpdate(update)
+			if isinstance(update_processing, utils.CoroutineType):
+				await update_processing
 
 
 if __name__ == "__main__":
 
 	from dotenv import load_dotenv
 	import os
+	import asyncio
 	
 	
 	load_dotenv()
 	
 	API_KEY = os.getenv("VK_API")
 	GROUP_ID = os.getenv("VK_GROUP")
+	URL = os.getenv("VK_URL")
+	VERSION = os.getenv("VK_VERSION")
 	
-	session = getLongPollServer(GROUP_ID, API_KEY)
-	print(session)
-	
-	server = session["server"]
-	key = session["key"]
-	ts = session["ts"]
-	
-	event = getSessionEvent(server, key, ts, 5)
-	print(event)
+	def handleUpdate(update):
+		print(update)
+
+	asyncio.run(vkStartPolling(
+			url=URL,
+			access_token=API_KEY,
+			group_id=GROUP_ID,
+			v=VERSION,
+			onUpdate=handleUpdate,
+	))

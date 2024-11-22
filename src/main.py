@@ -1,25 +1,70 @@
 import os
-import sys
-import requests
+import asyncio
+import time
+import utils
 from dotenv import load_dotenv
 
-import vk
+from vk import vkStartPolling
+from tg import telegramStartPolling, sendMessageInChat
 
 load_dotenv()
 
-VK_API_KEY = os.getenv("VK_API")
-TG_API_KEY = os.getenv("TG_API")
-VK_GROUP_ID = os.getenv("VK_GROUP")
+TG_API = os.getenv("TG_API")
+TG_URL = os.getenv("TG_URL")
+TG_CHAT_ID = os.getenv("TG_CHAT_ID")
+VK_API = os.getenv("VK_API")
+VK_GROUP_ID = os.getenv("VK_GROUP_ID")
+VK_VERSION = os.getenv("VK_VERSION")
+VK_URL = os.getenv("VK_URL")
 
-session = vk.getLongPollServer(VK_GROUP_ID, VK_API_KEY)
 
-server = session["server"]
-key = session["key"]
-ts = session["ts"]
+async def messageTemplate(data):
+		return str(data)
 
-while True:
-		event = vk.getSessionEvent(server, key, ts, wait=25)
-		ts = event["ts"]
-		print(event)
 
+async def onVkPost(update):
+	await sendMessageInChat(
+			url=TG_URL,
+			api_key=TG_API,
+			chat_id=TG_CHAT_ID,
+			text=await messageTemplate(update))
+
+async def run():
+
+	task1 = asyncio.create_task(telegramStartPolling(
+		url=TG_URL,
+		api_key=TG_API))
+	task2 = asyncio.create_task(vkStartPolling(
+		url=VK_URL,
+		group_id=VK_GROUP_ID,
+		access_token=VK_API,
+		v=VK_VERSION,
+		onUpdate=onVkPost))
+
+	await task1
+	await task2
+
+async def run_gather():
+	return await asyncio.gather(
+			telegramStartPolling(
+				url=TG_URL,
+				api_key=TG_API), 
+			vkStartPolling(
+				url=VK_URL,
+				group_id=VK_GROUP_ID,
+				access_token=VK_API,
+				v=VK_VERSION,
+				onUpdate=onVkPost))
+
+
+async def main():
+	while True:
+		try:
+			await run_gather()
+			break
+		except Exception as e:
+			print(e)
+
+
+asyncio.run(main())
 
